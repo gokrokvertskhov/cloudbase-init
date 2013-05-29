@@ -18,16 +18,16 @@
 import imp
 import os
 import sys, glob
-import logging
+from cloudbaseinit.openstack.common import log as logging
 import traceback
 
 LOG = logging.getLogger(__name__)
 global builders
 
-def load_from_file(filepath):
+def load_from_file(filepath, parent_set):
     class_inst = None
 
-    mod_name,file_ext = os.path.splitext(os.path.split(filepath)[-1])
+    mod_name, file_ext = os.path.splitext(os.path.split(filepath)[-1])
 
     if file_ext.lower() == '.py':
         py_mod = imp.load_source(mod_name, filepath)
@@ -35,37 +35,47 @@ def load_from_file(filepath):
     elif file_ext.lower() == '.pyc':
         py_mod = imp.load_compiled(mod_name, filepath)
 
-    if hasattr(py_mod, mod_name):
-    	callable = getattr(__import__(mod_name),mod_name)
-        class_inst = callable()
+    if hasattr(py_mod, "get_plugin"):
+    	callable = getattr(__import__(mod_name), "get_plugin")
+        class_inst = callable(parent_set)
 
     return class_inst
 
 
 class PluginSet:
-	def __init__(self):
-		self.path = 'userdata_plugins'
-		sys.path.append(self.path)
-		self.set = {}
 
-	def load(self):
+    def __init__(self, path):
+       self.path = path
+       sys.path.append(self.path)
+       self.set = {}
+       self.has_custom_handlers = False
+       self.custom_handlers = {}
+           	
+    def get_plugin(self, content_type, file_name):
+	   return
 
-		files = glob.glob(self.path+'/*.py')
+    def load(self):
+    	files = glob.glob(self.path + '/*.py')
+    		
+    	if len(files) == 0:
+    	   LOG.debug("No user data plug-ins found in %s:", self.path)
+           return
+       
+    	for file in files:
+    		  LOG.debug("Trying to load user data plug-in from file: %s", file)
+    		  try:
+    		    plugin = load_from_file(file, self)
+    		    if plugin is not None:
+    			LOG.info("Plugin '%s' loaded.", plugin.name)
+    			self.set[plugin.type] = plugin
+    		  except:
+    		    exc_type, exc_value, exc_traceback = sys.exc_info()
+    		    LOG.error('Can`t load plugin from the file %s. Skip it.', file)
+    		    LOG.debug(repr(traceback.format_exception(exc_type, exc_value,
+                                              exc_traceback)))
 
-		for file in files:
-			LOG.debug("Trying to load builder from file: %s", file)
-			try:
-				plugin = load_from_file(file)
-				LOG.info("Plugin '%s' loaded.", plugin.name)
-				self.set[plugin.type] = plugin
-			except:
-				exc_type, exc_value, exc_traceback = sys.exc_info()
-				LOG.error('Can`t load plugin from the file %s. Skip it.', file)
-				LOG.debug(repr(traceback.format_exception(exc_type, exc_value,
-                                          exc_traceback)))
 
-
-	def reload(self):
-		self.set = {}
-		self.load()
+    def reload(self):
+    	self.set = {}
+    	self.load()
 

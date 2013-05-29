@@ -22,6 +22,7 @@ import tempfile
 import os
 import errno
 
+
 from cloudbaseinit.openstack.common import cfg
 from cloudbaseinit.openstack.common import log as logging
 from cloudbaseinit.osutils.factory import *
@@ -42,32 +43,80 @@ class UserDataPlugin():
     def __init__(self, cfg=CONF):
         self.cfg = cfg
         self.msg = None
-        self.plugin_set = PluginSet()
+        self.plugin_set = PluginSet(self.get_plugin_path())
         self.plugin_set.reload()
         return
+    
+    def get_plugin_path(self):
+        #gokrokve: It is possible to add more logic here to load path from configuration for example.
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                 "windows/userdata-plugins")
 
     def execute(self, service):
         user_data = service.get_user_data('openstack')
         if not user_data:
             return False
-
+        self.process_userdata(user_data)
+        return
+    
+    def process_userdata(self, user_data):
         LOG.debug('User data content:\n%s' % user_data)
-
         if user_data.startswith('Content-Type: multipart'):
             for part in self.parse_MIME(user_data):
-                self.process_part(part)
+                self.process_part(part) 
         else:
             self.handle(user_data)
-        return
+
 
     def process_part(self, part):
-        if part.get_filename() == 'cfn-userdata':
-            self.handle(part.get_payload())
+        part_handler = self.get_part_handler(part)
+        if part_handler is not None:
+            try:
+                self.begin_part_process_event(part)
+                LOG.info("Processing part %s filename: %s with handler: %s", part.get_content_type(), part.get_filename(), part_handler.name)
+                part_handler.process(part)
+                self.end_part_process_event(part)
+            except Exception,e:
+                LOG.error('Exception during multipart part handling: %s %s \n %s' , part.get_content_type(), part.get_filename(), e)
         return
+    
+    def begin_part_process_event(self, part):
+        handler = self.get_custom_handler(part)
+        if handler is not None:
+            try:
+              handler("","__begin__", part.get_filename(), part.get_payload())
+            except Exception,e:
+                LOG.error("Exception occurred during custom handle script invocation (__begin__): %s ", e)
+        return
+    
+    def end_part_process_event(self, part):
+        handler = self.get_custom_handler(part)
+        if handler is not None:
+            try:
+              handler("","__end__", part.get_filename(), part.get_payload())
+            except Exception,e:
+              LOG.error("Exception occurred during custom handle script invocation (__end__): %s ", e)
+        return
+    
+    def get_custom_handler(self, part):
+        if self.plugin_set.has_custom_handlers:
+            if part.get_content_type() in self.plugin_set.custom_handlers:
+                handler = self.plugin_set.custom_handlers[part.get_content_type()]
+                return handler
+        return None
+        
+    
+    def get_part_handler(self, part):
+        if part.get_content_type() in self.plugin_set.set:
+            handler = self.plugin_set.set[part.get_content_type()]
+            return handler
+        else:
+            return None
+        
 
     def parse_MIME(self, user_data):
-        folder = self.cfg.user_data_folder
-        self.create_folder(folder)
+       # folder = self.cfg.user_data_folder
+       # self.create_folder(folder)
 
         self.msg = email.message_from_string(user_data)
         return self.msg.walk()
